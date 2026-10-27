@@ -1,31 +1,112 @@
 ---
 name: pr
-description: Prepare traceable release artifacts and follow a human-authorized GitHub PR sequence.
+description: Reusable methodology for preparing traceable release artifacts and safely executing a human-authorized GitHub pull request workflow.
 user-invocable: false
 ---
-# PR Release Method
 
-## Stage A: release files
-Proceed only when the PR phase is ACTIVE and verify says `Result: PASS`. Write `artifacts/pr.md` with Summary, What changed, Traceability, Test evidence, Risks, Rollback, and Reviewer checklist. Update `CHANGELOG.md` in Keep a Changelog format with Unreleased, Added, Changed, and Fixed. Submit and stop for human approval.
+# PR Release Skill
 
-## Stage B: authorized Git sequence
-Proceed only in a later invocation after every phase is APPROVED and the human explicitly says `go`. Check `git rev-parse --show-toplevel`, `git remote -v`, and that the current branch is not main/master. Run `git switch -c sdlc/<slug>` with a slug of at most 40 characters. Run `git add` with explicit paths only: `artifacts todo tests/test_todo.py CHANGELOG.md sdlc/state.json sdlc/audit.log.jsonl`; inspect `git diff --cached --name-only`; run `git commit` conventionally; run `git push -u origin <branch>`. Then use `search_pull_requests` to check for an existing PR on that branch; if none, use `create_pull_request` as a DRAFT with the pushed branch as head, the default branch as base, a title from the commit, and the body from `artifacts/pr.md`; then use `pull_request_read` to confirm and report the URL.
+## Purpose
 
-## Safety rules
-Never use force push, `git add -A`, `git add .`, `--no-verify`, history rewriting, or push to main/master. Do not stage files outside the allowlist. Never merge a pull request. Use no GitHub tool other than `create_pull_request`, `search_pull_requests`, and `pull_request_read`. Do not claim a push or PR succeeded without actual output. Stop on any command error; never retry with a bypass.
+Provide reusable quality and safety standards for the PR agent. The agent definition owns tool permissions and execution constraints; the prompt owns invocation routing. This skill defines the release methodology and validation criteria.
 
-## On failure
-Report the exact failing command and observed error. Do not change remote settings, authenticate, or edit unrelated files. The human resolves setup problems.
+## Stage A — Release readiness
 
-## Templates
-PR headings: Summary; What changed; Traceability (each ID to evidence); Test evidence; Risks; Rollback; Reviewer checklist.
-Changelog headings: `## [Unreleased]`, then Added, Changed, and Fixed.
+Before preparing release materials, verify that:
 
-## Validation checklist
-- Verification PASS and every requirement ID has evidence.
-- Stage A outputs match observed changes.
-- Stage B has explicit `go`, approved phases, safe branch, expected remote, and exact staged file list.
-- No secrets or unrelated files are staged.
+- The `pr` phase is `ACTIVE`.
+- `artifacts/verify.md` contains `Result: PASS`.
+- Approved predecessor artifacts and implementation evidence are available.
 
-## Stop condition
-After Stage A submission, stop for the human approval command. After Stage B, stop after reporting the actual PR result or first error.
+Prepare only the two release files:
+
+- `artifacts/pr.md`
+- `CHANGELOG.md`
+
+### PR artifact requirements
+
+Use these headings in `artifacts/pr.md`:
+
+1. Summary
+2. What changed
+3. Traceability
+4. Test evidence
+5. Risks
+6. Rollback
+7. Reviewer checklist
+
+Map each requirement ID to relevant implementation or verification evidence. Report actual test results and known limitations. Do not invent completed work, test outcomes, approvals, or release scope.
+
+### Changelog requirements
+
+Follow Keep a Changelog format with:
+
+- `## [Unreleased]`
+- `### Added`
+- `### Changed`
+- `### Fixed`
+
+Include only changes supported by observed repository evidence.
+
+### Release validation
+
+Before submission, confirm:
+
+- Every applicable requirement ID has evidence.
+- Verification is PASS.
+- Release notes match the actual intended changes.
+- Risks and rollback guidance are documented.
+- Only the two release files are modified by this stage.
+
+## Stage B — Pull request quality standards
+
+Stage B is a separately authorized operation requiring explicit `go` in the invocation. Authorization and phase-state preconditions are enforced by the PR agent and invocation prompt.
+
+### Repository and change review
+
+Before any remote write:
+
+- Identify the repository from its configured `origin`.
+- Confirm the intended target base is `main`.
+- Review the working-tree status and complete diffs.
+- Confirm every proposed file is an intended, reviewed change.
+- Exclude unrelated files, secrets, runtime state, audit logs, and protected infrastructure.
+- Stop if the exact file list or contents are ambiguous.
+
+### Branch, commit, and PR quality
+
+Use these GitHub MCP operations in order: `create_branch`, `push_files`, `search_pull_requests`, `create_pull_request`, `pull_request_read`.
+
+The intended result is a draft pull request with:
+
+- A descriptive title.
+- A conventional commit message.
+- A concise, traceable description based on `artifacts/pr.md`.
+- The correct feature branch and base `main`.
+- `draft: true` set in the `create_pull_request` call.
+- No duplicate PR for the same head and base.
+
+The final result must be checked against the actual GitHub response. A requested operation is not evidence that it succeeded.
+
+### Failure handling
+
+If a precondition, repository check, remote operation, or readback fails:
+
+- Stop at the first error.
+- Report the observed error and any confirmed partial outcome.
+- Do not use an alternative mutation path or bypass a failed check.
+- Leave recovery to the human operator.
+
+## Final quality checklist
+
+- Release materials are traceable to approved requirements and actual evidence.
+- Verification reports `Result: PASS`.
+- Proposed files and contents match the reviewed changes.
+- The repository and target base are correct.
+- Duplicate-PR checks and final PR readback are complete.
+- No secrets, unrelated files, or protected infrastructure are included.
+- The final report states only observed outcomes.
+
+## Non-negotiable release principle
+
+A successful submission, a created branch, a pushed commit, and an opened pull request are distinct outcomes. Report each only when supported by actual evidence. Never merge a pull request.

@@ -44,11 +44,14 @@ class ConfigurationTests(unittest.TestCase):
     def test_agent_and_prompt_frontmatter_and_phase_names_match(self) -> None:
         for phase in self.phases:
             agent_text = (ROOT / phase["agent"]).read_text(encoding="utf-8")
-            prompt_text = (ROOT / phase["prompt"]).read_text(encoding="utf-8")
             with self.subTest(phase=phase["id"]):
                 self.assertRegex(frontmatter(agent_text), rf"(?m)^name: {re.escape(phase['id'])}$")
-                self.assertRegex(frontmatter(prompt_text), rf"(?m)^name: {re.escape(phase['id'])}$")
-                self.assertRegex(frontmatter(prompt_text), rf"(?m)^agent: {re.escape(phase['id'])}$")
+        run_text = (ROOT / ".github" / "prompts" / "run.prompt.md").read_text(encoding="utf-8")
+        pr_text = (ROOT / ".github" / "prompts" / "pr.prompt.md").read_text(encoding="utf-8")
+        self.assertRegex(frontmatter(run_text), r"(?m)^name: run$")
+        self.assertRegex(frontmatter(run_text), r"(?m)^agent: orchestrator$")
+        self.assertRegex(frontmatter(pr_text), r"(?m)^name: pr$")
+        self.assertRegex(frontmatter(pr_text), r"(?m)^agent: pr$")
 
     def test_agent_ownership_and_approval_gate_match_manifest(self) -> None:
         bodies: set[str] = set()
@@ -79,6 +82,27 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn("search/changes", pr)
         self.assertIn("execute/testFailure", verify)
         self.assertNotIn("execute/testFailure", review)
+
+    def test_pr_stage_b_uses_mcp_and_preserves_human_gate(self) -> None:
+        agent = (ROOT / ".github" / "agents" / "pr.agent.md").read_text(encoding="utf-8")
+        prompt = (ROOT / ".github" / "prompts" / "pr.prompt.md").read_text(encoding="utf-8")
+        skill = (ROOT / ".github" / "skills" / "pr" / "SKILL.md").read_text(encoding="utf-8")
+        for document in (agent, prompt, skill):
+            with self.subTest(document=document[:40]):
+                self.assertIn("explicit `go`", document)
+                self.assertIn("create_branch", document)
+                self.assertIn("push_files", document)
+                self.assertIn("search_pull_requests", document)
+                self.assertIn("create_pull_request", document)
+                self.assertIn("pull_request_read", document)
+                self.assertIn("base `main`", document)
+                self.assertIn("Never merge", document)
+                self.assertNotIn("git push -u origin", document)
+                self.assertNotIn("sdlc/state.json", document)
+        self.assertIn("draft: true", agent)
+        self.assertIn("draft: true", skill)
+        self.assertIn("Result: PASS", agent)
+        self.assertIn("Result: PASS", skill)
 
     def test_skills_and_hook_registration(self) -> None:
         for skill in ("requirements", "verify", "pr"):

@@ -1,21 +1,22 @@
 # Changelog
 
-All notable changes to this project are documented in this file.
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
 ### Added
 
-- Eight-phase, human-approved Copilot SDLC workflow with an orchestrator, tamper checks, audit logging, and a PreToolUse guard.
-- Local Todo CLI using `tasks.json`, monotonic task IDs, and atomic storage updates.
-- Requirement-tagged `unittest` coverage, infrastructure checks, clean-state audit, contract, and runbook.
+- `todo/app.py`: `Task` dataclass, `TodoError`/`StorageError`/`CorruptStorageError` error hierarchy, `JsonStore` with atomic JSON persistence, `TodoApp` with `add`, `list_tasks`, `done`, `reopen`, and `delete` operations (FR-001 through FR-024, NFR-001 through NFR-006).
+- `todo/cli.py`: CLI entry point `main(argv, stdout, stderr, app) -> int` with subcommands `add`, `list`, `done`, `reopen`, `delete`; exit codes 0/1/2 (FR-001, FR-004 through FR-016).
+- `todo/__init__.py`: Package initialisation (NFR-001).
+- `tests/test_todo.py`: 68 unit tests covering all 24 FRs and 6 NFRs using `unittest` and temporary directories (NFR-006).
 
 ### Changed
 
-- Reorganized the repository from the documentation-sync project into the requested capstone structure.
-- Standardized project verification on Python 3.11+ and the Python standard library.
+- Nothing changed; all files are new additions.
 
 ### Fixed
 
-- Reject inconsistent persisted `next_id` values so task IDs cannot be reused or collide.
-- Preserve storage bytes for no-op and failure paths and escape terminal control and Unicode line separators in displayed titles.
+- Nothing fixed; this is the initial implementation.

@@ -4,6 +4,8 @@ description: Convert the approved and reviewed design into a small, verifiable i
 argument-hint: Plan the active implementation work.
 tools:
   - read/readFile
+  - edit/createFile
+  - edit/editFiles
   - search/codebase
   - vscode/askQuestions
   - execute/runInTerminal

@@ -1,10 +1,9 @@
-"""Todo domain operations and local JSON persistence."""
+"""Core Todo application logic: Task dataclass, error hierarchy, JsonStore, TodoApp."""
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import stat
 import tempfile
 from dataclasses import dataclass
@@ -12,216 +11,199 @@ from pathlib import Path
 from typing import Any
 
 
+# ---------------------------------------------------------------------------
+# Error hierarchy
+# ---------------------------------------------------------------------------
+
 class TodoError(Exception):
-    """Base class for expected Todo application errors."""
-
-
-class EmptyTitleError(TodoError):
-    """A task title is empty after surrounding whitespace is removed."""
-
-
-class InvalidTitleError(TodoError):
-    """A task title is not text."""
-
-
-class TaskNotFoundError(TodoError):
-    """A requested task ID is invalid or does not exist."""
-
-    def __init__(self, task_id: str) -> None:
-        self.task_id = task_id
-        super().__init__(task_id)
+    """Base class for all Todo application errors."""
 
 
 class StorageError(TodoError):
-    """Task storage could not be read or written."""
+    """Raised when the storage file cannot be read or written due to an I/O problem."""
 
 
-class CorruptStorageError(TodoError):
-    """Task storage has invalid JSON or an invalid persisted schema."""
+class CorruptStorageError(StorageError):
+    """Raised when the storage file contains structurally invalid data."""
 
 
-@dataclass(frozen=True)
+# ---------------------------------------------------------------------------
+# Domain model
+# ---------------------------------------------------------------------------
+
+@dataclass
 class Task:
-    """One persisted task."""
-
     id: int
     title: str
-    status: str
+    status: str  # "open" | "done"
 
+
+# ---------------------------------------------------------------------------
+# Storage
+# ---------------------------------------------------------------------------
+
+_EMPTY_STATE: dict[str, Any] = {"next_id": 1, "tasks": []}
+
+
+def _validate_store(data: Any) -> None:
+    """Raise CorruptStorageError if *data* does not match the expected schema."""
+    if not isinstance(data, dict):
+        raise CorruptStorageError("storage root must be a JSON object")
+    if not isinstance(data.get("next_id"), int) or data["next_id"] < 1:
+        raise CorruptStorageError("storage 'next_id' must be a positive integer")
+    if not isinstance(data.get("tasks"), list):
+        raise CorruptStorageError("storage 'tasks' must be a JSON array")
+    seen_ids: set[int] = set()
+    for task in data["tasks"]:
+        if not isinstance(task, dict):
+            raise CorruptStorageError("each task must be a JSON object")
+        if not isinstance(task.get("id"), int):
+            raise CorruptStorageError("task 'id' must be an integer")
+        if not isinstance(task.get("title"), str):
+            raise CorruptStorageError("task 'title' must be a string")
+        if task.get("status") not in ("open", "done"):
+            raise CorruptStorageError("task 'status' must be 'open' or 'done'")
+        if task["id"] in seen_ids:
+            raise CorruptStorageError(f"duplicate task id {task['id']}")
+        seen_ids.add(task["id"])
+
+
+class JsonStore:
+    """Atomic JSON persistence for tasks."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def read(self) -> dict[str, Any]:
+        """Return the stored state dict, or the empty-state default."""
+        if not self._path.exists() or self._path.stat().st_size == 0:
+            return {"next_id": 1, "tasks": []}
+        try:
+            text = self._path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise StorageError(f"cannot read {self._path}: {exc}") from exc
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise CorruptStorageError(f"invalid JSON in {self._path}: {exc}") from exc
+        _validate_store(data)
+        return data
+
+    def write(self, data: dict[str, Any]) -> None:
+        """Atomically replace the storage file with *data*."""
+        parent = self._path.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        # Preserve existing file mode so callers' umask settings are respected.
+        existing_mode: int | None = None
+        if self._path.exists():
+            existing_mode = stat.S_IMODE(self._path.stat().st_mode)
+        tmp_name: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=parent,
+                delete=False,
+                newline="\n",
+            ) as tmp:
+                tmp_name = tmp.name
+                json.dump(data, tmp, indent=2, ensure_ascii=False)
+                tmp.write("\n")
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            if existing_mode is not None:
+                os.chmod(tmp_name, existing_mode)
+            os.replace(tmp_name, self._path)
+            tmp_name = None
+        except OSError as exc:
+            raise StorageError(f"cannot write {self._path}: {exc}") from exc
+        finally:
+            if tmp_name is not None and os.path.exists(tmp_name):
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+
+
+# ---------------------------------------------------------------------------
+# Application
+# ---------------------------------------------------------------------------
 
 class TodoApp:
-    """Manage tasks stored in a JSON file in the current directory."""
+    """High-level task operations; all persistence goes through JsonStore."""
 
-    def __init__(self, storage_path: str | Path | None = None) -> None:
-        self.storage_path = Path(storage_path) if storage_path is not None else Path.cwd() / "tasks.json"
+    def __init__(self, store_path: Path) -> None:
+        self._store = JsonStore(store_path)
 
-    @staticmethod
-    def _task_id(value: object) -> int:
-        if type(value) is int and value > 0:
-            return value
-        if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
-            try:
-                task_id = int(value)
-            except ValueError as exc:
-                raise TaskNotFoundError(value) from exc
-            if task_id > 0:
-                return task_id
-        raise TaskNotFoundError(str(value))
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _load(self) -> dict[str, Any]:
+        return self._store.read()
+
+    def _save(self, data: dict[str, Any]) -> None:
+        self._store.write(data)
 
     @staticmethod
-    def _task_title(value: object) -> str:
-        if not isinstance(value, str):
-            raise InvalidTitleError("Task title must be text.")
-        title = value.strip()
-        if not title:
-            raise EmptyTitleError("Task title must not be empty.")
-        return title
+    def _validate_id(task_id: int) -> None:
+        if task_id <= 0:
+            raise KeyError(task_id)
 
-    def add_task(self, title: str) -> Task:
-        cleaned_title = self._task_title(title)
-        next_id, tasks = self._load_state()
-        created = Task(next_id, cleaned_title, "open")
-        self._save_state(next_id + 1, [*tasks, created])
-        return created
+    @staticmethod
+    def _find(tasks: list[dict[str, Any]], task_id: int) -> dict[str, Any]:
+        for task in tasks:
+            if task["id"] == task_id:
+                return task
+        raise KeyError(task_id)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def add(self, title: str) -> Task:
+        """Create a new open task and return it. *title* must be non-empty after strip."""
+        data = self._load()
+        new_id = data["next_id"]
+        task: dict[str, Any] = {"id": new_id, "title": title, "status": "open"}
+        data["tasks"].append(task)
+        data["next_id"] = new_id + 1
+        self._save(data)
+        return Task(id=task["id"], title=task["title"], status=task["status"])
 
     def list_tasks(self) -> list[Task]:
-        _, tasks = self._load_state()
-        return list(tasks)
+        """Return all tasks in insertion order."""
+        data = self._load()
+        return [Task(id=t["id"], title=t["title"], status=t["status"]) for t in data["tasks"]]
 
-    def complete_task(self, task_id: str | int) -> tuple[Task, bool]:
-        requested_id = self._task_id(task_id)
-        next_id, tasks = self._load_state()
-        for index, task in enumerate(tasks):
-            if task.id == requested_id:
-                if task.status == "done":
-                    return task, False
-                completed = Task(task.id, task.title, "done")
-                updated_tasks = list(tasks)
-                updated_tasks[index] = completed
-                self._save_state(next_id, updated_tasks)
-                return completed, True
-        raise TaskNotFoundError(str(task_id))
+    def done(self, task_id: int) -> tuple[Task, bool]:
+        """Mark task *task_id* as done. Returns (task, changed) — False when already done."""
+        self._validate_id(task_id)
+        data = self._load()
+        record = self._find(data["tasks"], task_id)
+        changed = record["status"] != "done"
+        if changed:
+            record["status"] = "done"
+            self._save(data)
+        return Task(id=record["id"], title=record["title"], status=record["status"]), changed
 
-    def reopen_task(self, task_id: str | int) -> tuple[Task, bool]:
-        requested_id = self._task_id(task_id)
-        next_id, tasks = self._load_state()
-        for index, task in enumerate(tasks):
-            if task.id == requested_id:
-                if task.status == "open":
-                    return task, False
-                reopened = Task(task.id, task.title, "open")
-                updated_tasks = list(tasks)
-                updated_tasks[index] = reopened
-                self._save_state(next_id, updated_tasks)
-                return reopened, True
-        raise TaskNotFoundError(str(task_id))
+    def reopen(self, task_id: int) -> tuple[Task, bool]:
+        """Mark task *task_id* as open. Returns (task, changed) — False when already open."""
+        self._validate_id(task_id)
+        data = self._load()
+        record = self._find(data["tasks"], task_id)
+        changed = record["status"] != "open"
+        if changed:
+            record["status"] = "open"
+            self._save(data)
+        return Task(id=record["id"], title=record["title"], status=record["status"]), changed
 
-    def delete_task(self, task_id: str | int) -> Task:
-        requested_id = self._task_id(task_id)
-        next_id, tasks = self._load_state()
-        for index, task in enumerate(tasks):
-            if task.id == requested_id:
-                self._save_state(next_id, tasks[:index] + tasks[index + 1 :])
-                return task
-        raise TaskNotFoundError(str(task_id))
-
-    def _load_state(self) -> tuple[int, list[Task]]:
-        try:
-            raw = self.storage_path.read_bytes()
-        except FileNotFoundError:
-            return 1, []
-        except OSError as exc:
-            raise StorageError("Task storage could not be read.") from exc
-
-        if not raw:
-            return 1, []
-
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise CorruptStorageError("Task storage is corrupt.") from exc
-        return self._validate_payload(payload)
-
-    @staticmethod
-    def _validate_payload(payload: Any) -> tuple[int, list[Task]]:
-        if not isinstance(payload, dict) or set(payload) != {"next_id", "tasks"}:
-            raise CorruptStorageError("Task storage has an invalid structure.")
-
-        next_id = payload["next_id"]
-        records = payload["tasks"]
-        if type(next_id) is not int or next_id < 1 or not isinstance(records, list):
-            raise CorruptStorageError("Task storage has invalid field types.")
-
-        tasks: list[Task] = []
-        seen_ids: set[int] = set()
-        for record in records:
-            if not isinstance(record, dict) or set(record) != {"id", "title", "status"}:
-                raise CorruptStorageError("Task storage has an invalid task record.")
-            task_id = record["id"]
-            title = record["title"]
-            status = record["status"]
-            if (
-                type(task_id) is not int
-                or task_id < 1
-                or task_id in seen_ids
-                or not isinstance(title, str)
-                or not isinstance(status, str)
-                or status not in {"open", "done"}
-            ):
-                raise CorruptStorageError("Task storage has an invalid task record.")
-            seen_ids.add(task_id)
-            tasks.append(Task(task_id, title, status))
-
-        if next_id <= max(seen_ids, default=0):
-            raise CorruptStorageError("Task storage next_id is inconsistent.")
-        return next_id, tasks
-
-    def _save_state(self, next_id: int, tasks: list[Task]) -> None:
-        destination = self.storage_path
-        try:
-            try:
-                existing_mode: int | None = stat.S_IMODE(destination.stat().st_mode)
-            except FileNotFoundError:
-                existing_mode = None
-        except OSError as exc:
-            raise StorageError("Task storage mode could not be read.") from exc
-
-        temporary_name: str | None = None
-        open_descriptor: int | None = None
-        try:
-            open_descriptor, temporary_name = tempfile.mkstemp(
-                prefix=f".{destination.name}.", dir=destination.parent
-            )
-            with os.fdopen(open_descriptor, "w", encoding="utf-8", newline="\n") as stream:
-                open_descriptor = None
-                json.dump(
-                    {
-                        "next_id": next_id,
-                        "tasks": [
-                            {"id": task.id, "title": task.title, "status": task.status}
-                            for task in tasks
-                        ],
-                    },
-                    stream,
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            if existing_mode is not None:
-                os.chmod(temporary_name, existing_mode)
-            os.replace(temporary_name, destination)
-        except (OSError, UnicodeError, TypeError, ValueError) as exc:
-            raise StorageError("Task storage could not be written.") from exc
-        finally:
-            if open_descriptor is not None:
-                try:
-                    os.close(open_descriptor)
-                except OSError:
-                    pass
-            if temporary_name is not None and os.path.exists(temporary_name):
-                try:
-                    os.unlink(temporary_name)
-                except OSError:
-                    pass
+    def delete(self, task_id: int) -> None:
+        """Remove task *task_id*. Raises KeyError if not found."""
+        self._validate_id(task_id)
+        data = self._load()
+        original_len = len(data["tasks"])
+        data["tasks"] = [t for t in data["tasks"] if t["id"] != task_id]
+        if len(data["tasks"]) == original_len:
+            raise KeyError(task_id)
+        self._save(data)
