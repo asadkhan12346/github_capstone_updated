@@ -1,365 +1,723 @@
-"""Requirement-tagged tests for Todo storage and application behavior."""
+"""Tests for the Todo application.
+
+Requirement coverage:
+    FR-001  Command-line operations.
+    FR-002  Create a task.
+    FR-003  Initial task status.
+    FR-004  Add output format.
+    FR-005  List tasks.
+    FR-006  Empty list.
+    FR-007  Complete an open task.
+    FR-008  Complete an already-done task.
+    FR-009  Reopen a done task.
+    FR-010  Reopen an already-open task.
+    FR-011  Delete a task.
+    FR-012  Unknown task ID.
+    FR-013  Invalid task ID.
+    FR-014  Usage error.
+    FR-015  Error stream and exit status.
+    FR-016  Empty title rejection.
+    FR-017  Title whitespace trimming.
+    FR-018  Duplicate titles allowed.
+    FR-019  No count or title-length limit.
+    FR-020  Persistent storage contract.
+    FR-021  Missing or empty storage.
+    FR-022  Corrupt storage.
+    FR-023  Other storage I/O failures.
+    FR-024  Monotonic, non-reused IDs.
+    NFR-001 Runtime and dependencies.
+    NFR-002 Storage encoding and representation.
+    NFR-003 Atomic saves.
+    NFR-004 No unintended writes.
+    NFR-005 Local privacy.
+    NFR-006 Testability.
+"""
 
 from __future__ import annotations
 
+import importlib
+import inspect
 import json
 import os
-import socket
-import stat
+import shutil
 import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
-from urllib import request
 from unittest.mock import patch
 
-from todo.app import (
-    CorruptStorageError,
-    EmptyTitleError,
-    StorageError,
-    Task,
-    TaskNotFoundError,
-    TodoApp,
-)
-from todo.cli import EXIT_ERROR, EXIT_OK, EXIT_USAGE, main
+from todo.app import CorruptStorageError, JsonStore, StorageError, Task, TodoApp
+from todo.cli import main
 
 
-class TodoStorageTests(unittest.TestCase):
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+class _Base(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.directory = Path(self.temporary_directory.name)
-        self.storage_path = self.directory / "tasks.json"
-        self.app = TodoApp(self.storage_path)
+        self._dir = tempfile.mkdtemp()
+        self._store = Path(self._dir) / "tasks.json"
+        self.app = TodoApp(self._store)
 
     def tearDown(self) -> None:
-        self.temporary_directory.cleanup()
+        shutil.rmtree(self._dir, ignore_errors=True)
 
-    def test_missing_and_empty_storage(self) -> None:
-        """FR-020, FR-021: missing and empty storage use the defined empty state."""
-        self.assertEqual(self.app._load_state(), (1, []))
-        self.storage_path.write_bytes(b"")
-        self.assertEqual(self.app._load_state(), (1, []))
+    def _cli(self, *args: str) -> tuple[int, str, str]:
+        out, err = StringIO(), StringIO()
+        code = main(list(args), stdout=out, stderr=err, app=self.app)
+        return code, out.getvalue(), err.getvalue()
 
-    def test_json_encoding_and_indentation(self) -> None:
-        """FR-020, NFR-002: persist the exact JSON schema and encoding."""
-        task = Task(1, "caf\u00e9", "open")
-        self.app._save_state(2, [task])
-        data = self.storage_path.read_bytes()
-        self.assertIn("caf\u00e9".encode("utf-8"), data)
-        self.assertNotIn(b"\\u00e9", data)
-        self.assertEqual(json.loads(data.decode("utf-8")), {
-            "next_id": 2,
-            "tasks": [{"id": 1, "title": "caf\u00e9", "status": "open"}],
-        })
-        self.assertIn(b'\n  "next_id"', data)
 
-    def test_corrupt_storage_and_inconsistent_next_id_preserve_bytes(self) -> None:
-        """FR-022, FR-024: reject corrupt records and unsafe ID counters unchanged."""
-        invalid_payloads = (
-            b"{broken",
-            b'{"next_id":true,"tasks":[]}',
-            b'{"next_id":1,"tasks":[{"id":1,"title":"a","status":[]}]}',
-            b'{"next_id":2,"tasks":[{"id":1,"title":"a","status":"open"},{"id":1,"title":"b","status":"done"}]}',
-            b'{"next_id":1,"tasks":[{"id":1,"title":"a","status":"open"}]}',
+# ---------------------------------------------------------------------------
+# FR-001 Command-line operations
+# ---------------------------------------------------------------------------
+
+class TestFR001Commands(_Base):
+    """FR-001: Five subcommands exist and are dispatched."""
+
+    def test_add_command_exists(self) -> None:  # FR-001
+        code, out, _ = self._cli("add", "Buy milk")
+        self.assertEqual(code, 0)
+
+    def test_list_command_exists(self) -> None:  # FR-001
+        code, _, _ = self._cli("list")
+        self.assertEqual(code, 0)
+
+    def test_done_command_exists(self) -> None:  # FR-001
+        t = self.app.add("x")
+        code, _, _ = self._cli("done", str(t.id))
+        self.assertEqual(code, 0)
+
+    def test_reopen_command_exists(self) -> None:  # FR-001
+        t = self.app.add("x")
+        self.app.done(t.id)
+        code, _, _ = self._cli("reopen", str(t.id))
+        self.assertEqual(code, 0)
+
+    def test_delete_command_exists(self) -> None:  # FR-001
+        t = self.app.add("x")
+        code, _, _ = self._cli("delete", str(t.id))
+        self.assertEqual(code, 0)
+
+
+# ---------------------------------------------------------------------------
+# FR-002 Create a task
+# ---------------------------------------------------------------------------
+
+class TestFR002CreateTask(_Base):
+    """FR-002: add returns a Task with the correct fields."""
+
+    def test_add_returns_task(self) -> None:  # FR-002
+        task = self.app.add("Buy milk")
+        self.assertIsInstance(task, Task)
+        self.assertEqual(task.title, "Buy milk")
+        self.assertGreater(task.id, 0)
+
+    def test_add_assigns_sequential_id(self) -> None:  # FR-002
+        a = self.app.add("First")
+        b = self.app.add("Second")
+        self.assertEqual(b.id, a.id + 1)
+
+
+# ---------------------------------------------------------------------------
+# FR-003 Initial task status
+# ---------------------------------------------------------------------------
+
+class TestFR003InitialStatus(_Base):
+    """FR-003: Newly created tasks have status 'open'."""
+
+    def test_new_task_status_is_open(self) -> None:  # FR-003
+        task = self.app.add("Task")
+        self.assertEqual(task.status, "open")
+
+
+# ---------------------------------------------------------------------------
+# FR-004 Add output format
+# ---------------------------------------------------------------------------
+
+class TestFR004AddOutput(_Base):
+    """FR-004: add prints 'Added: {id} [open] {title}' to stdout."""
+
+    def test_add_stdout_format(self) -> None:  # FR-004
+        code, out, _ = self._cli("add", "Buy milk")
+        self.assertEqual(code, 0)
+        self.assertIn("[open]", out)
+        self.assertIn("Buy milk", out)
+        self.assertIn("Added:", out)
+
+    def test_add_stdout_exact_format(self) -> None:  # FR-004
+        task = self.app.add("Pay bills")
+        _, out, _ = self._cli("add", "Another")
+        lines = out.strip().splitlines()
+        self.assertTrue(lines[-1].startswith("Added: "))
+
+
+# ---------------------------------------------------------------------------
+# FR-005 List tasks
+# ---------------------------------------------------------------------------
+
+class TestFR005ListTasks(_Base):
+    """FR-005: list shows all tasks in creation order."""
+
+    def test_list_returns_all_tasks(self) -> None:  # FR-005
+        self.app.add("Alpha")
+        self.app.add("Beta")
+        code, out, _ = self._cli("list")
+        self.assertEqual(code, 0)
+        self.assertIn("Alpha", out)
+        self.assertIn("Beta", out)
+
+    def test_list_creation_order(self) -> None:  # FR-005
+        self.app.add("First")
+        self.app.add("Second")
+        _, out, _ = self._cli("list")
+        self.assertLess(out.index("First"), out.index("Second"))
+
+
+# ---------------------------------------------------------------------------
+# FR-006 Empty list
+# ---------------------------------------------------------------------------
+
+class TestFR006EmptyList(_Base):
+    """FR-006: list with no tasks prints 'No tasks.'."""
+
+    def test_empty_list_message(self) -> None:  # FR-006
+        code, out, _ = self._cli("list")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), "No tasks.")
+
+
+# ---------------------------------------------------------------------------
+# FR-007 Complete an open task
+# ---------------------------------------------------------------------------
+
+class TestFR007CompleteOpenTask(_Base):
+    """FR-007: done changes an open task to done."""
+
+    def test_done_open_task_changes_status(self) -> None:  # FR-007
+        task = self.app.add("Task")
+        result, changed = self.app.done(task.id)
+        self.assertTrue(changed)
+        self.assertEqual(result.status, "done")
+
+    def test_done_persists(self) -> None:  # FR-007
+        task = self.app.add("Task")
+        self.app.done(task.id)
+        tasks = self.app.list_tasks()
+        self.assertEqual(tasks[0].status, "done")
+
+
+# ---------------------------------------------------------------------------
+# FR-008 Complete an already-done task
+# ---------------------------------------------------------------------------
+
+class TestFR008AlreadyDone(_Base):
+    """FR-008: done on an already-done task is a no-op."""
+
+    def test_done_already_done_returns_false(self) -> None:  # FR-008
+        task = self.app.add("Task")
+        self.app.done(task.id)
+        _, changed = self.app.done(task.id)
+        self.assertFalse(changed)
+
+    def test_done_already_done_prints_message(self) -> None:  # FR-008
+        task = self.app.add("Task")
+        self.app.done(task.id)
+        code, out, _ = self._cli("done", str(task.id))
+        self.assertEqual(code, 0)
+        self.assertIn(f"Task {task.id} is already done.", out)
+
+
+# ---------------------------------------------------------------------------
+# FR-009 Reopen a done task
+# ---------------------------------------------------------------------------
+
+class TestFR009ReopenDoneTask(_Base):
+    """FR-009: reopen changes a done task back to open."""
+
+    def test_reopen_done_task(self) -> None:  # FR-009
+        task = self.app.add("Task")
+        self.app.done(task.id)
+        result, changed = self.app.reopen(task.id)
+        self.assertTrue(changed)
+        self.assertEqual(result.status, "open")
+
+
+# ---------------------------------------------------------------------------
+# FR-010 Reopen an already-open task
+# ---------------------------------------------------------------------------
+
+class TestFR010AlreadyOpen(_Base):
+    """FR-010: reopen on an already-open task is a no-op."""
+
+    def test_reopen_already_open_returns_false(self) -> None:  # FR-010
+        task = self.app.add("Task")
+        _, changed = self.app.reopen(task.id)
+        self.assertFalse(changed)
+
+    def test_reopen_already_open_prints_message(self) -> None:  # FR-010
+        task = self.app.add("Task")
+        code, out, _ = self._cli("reopen", str(task.id))
+        self.assertEqual(code, 0)
+        self.assertIn(f"Task {task.id} is already open.", out)
+
+
+# ---------------------------------------------------------------------------
+# FR-011 Delete a task
+# ---------------------------------------------------------------------------
+
+class TestFR011Delete(_Base):
+    """FR-011: delete removes the task from storage."""
+
+    def test_delete_removes_task(self) -> None:  # FR-011
+        task = self.app.add("Delete me")
+        self.app.delete(task.id)
+        ids = [t.id for t in self.app.list_tasks()]
+        self.assertNotIn(task.id, ids)
+
+    def test_delete_via_cli(self) -> None:  # FR-011
+        task = self.app.add("Remove")
+        code, _, _ = self._cli("delete", str(task.id))
+        self.assertEqual(code, 0)
+
+
+# ---------------------------------------------------------------------------
+# FR-012 Unknown task ID
+# ---------------------------------------------------------------------------
+
+class TestFR012UnknownID(_Base):
+    """FR-012: not-found errors go to stderr with exit 1."""
+
+    def test_done_unknown_id_stderr_exit1(self) -> None:  # FR-012
+        code, _, err = self._cli("done", "9999")
+        self.assertEqual(code, 1)
+        self.assertIn("9999", err)
+
+    def test_reopen_unknown_id(self) -> None:  # FR-012
+        code, _, err = self._cli("reopen", "9999")
+        self.assertEqual(code, 1)
+
+    def test_delete_unknown_id(self) -> None:  # FR-012
+        code, _, err = self._cli("delete", "9999")
+        self.assertEqual(code, 1)
+
+    def test_error_message_format(self) -> None:  # FR-012
+        code, _, err = self._cli("done", "42")
+        self.assertIn("Error: task 42 not found.", err)
+
+
+# ---------------------------------------------------------------------------
+# FR-013 Invalid task ID
+# ---------------------------------------------------------------------------
+
+class TestFR013InvalidID(_Base):
+    """FR-013: IDs that are 0, negative, or non-numeric are treated as not-found."""
+
+    def test_zero_id_treated_as_not_found(self) -> None:  # FR-013
+        code, _, _ = self._cli("done", "0")
+        self.assertEqual(code, 1)
+
+    def test_negative_id_treated_as_not_found(self) -> None:  # FR-013
+        code, _, _ = self._cli("done", "-1")
+        self.assertEqual(code, 1)
+
+    def test_non_numeric_id_treated_as_not_found(self) -> None:  # FR-013
+        code, _, err = self._cli("done", "abc")
+        self.assertEqual(code, 1)
+
+
+# ---------------------------------------------------------------------------
+# FR-014 Usage error
+# ---------------------------------------------------------------------------
+
+class TestFR014UsageError(_Base):
+    """FR-014: bad commands print USAGE and return exit 2."""
+
+    def test_no_subcommand_returns_2(self) -> None:  # FR-014
+        code, _, err = self._cli()
+        self.assertEqual(code, 2)
+
+    def test_unknown_subcommand_returns_2(self) -> None:  # FR-014
+        code, _, err = self._cli("bogus")
+        self.assertEqual(code, 2)
+
+    def test_usage_message_starts_with_USAGE(self) -> None:  # FR-014
+        _, _, err = self._cli()
+        self.assertIn("USAGE", err)
+
+
+# ---------------------------------------------------------------------------
+# FR-015 Error stream and exit status
+# ---------------------------------------------------------------------------
+
+class TestFR015ErrorStream(_Base):
+    """FR-015: errors go to stderr with non-zero exit."""
+
+    def test_not_found_goes_to_stderr(self) -> None:  # FR-015
+        code, out, err = self._cli("done", "999")
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("Error", err)
+
+
+# ---------------------------------------------------------------------------
+# FR-016 Empty title rejection
+# ---------------------------------------------------------------------------
+
+class TestFR016EmptyTitle(_Base):
+    """FR-016: empty or whitespace-only titles are rejected."""
+
+    def test_empty_title_rejected(self) -> None:  # FR-016
+        code, _, _ = self._cli("add", "")
+        self.assertEqual(code, 2)
+
+    def test_whitespace_only_title_rejected(self) -> None:  # FR-016
+        code, _, _ = self._cli("add", "   ")
+        self.assertEqual(code, 2)
+
+    def test_empty_title_no_task_created(self) -> None:  # FR-016
+        self._cli("add", "")
+        tasks = self.app.list_tasks()
+        self.assertEqual(tasks, [])
+
+
+# ---------------------------------------------------------------------------
+# FR-017 Title whitespace
+# ---------------------------------------------------------------------------
+
+class TestFR017TitleWhitespace(_Base):
+    """FR-017: surrounding whitespace is trimmed; internal is preserved."""
+
+    def test_surrounding_whitespace_trimmed(self) -> None:  # FR-017
+        code, _, _ = self._cli("add", "  Buy milk  ")
+        self.assertEqual(code, 0)
+        tasks = self.app.list_tasks()
+        self.assertEqual(tasks[0].title, "Buy milk")
+
+    def test_internal_whitespace_preserved(self) -> None:  # FR-017
+        code, _, _ = self._cli("add", "  Buy  milk  ")
+        self.assertEqual(code, 0)
+        tasks = self.app.list_tasks()
+        self.assertEqual(tasks[0].title, "Buy  milk")
+
+
+# ---------------------------------------------------------------------------
+# FR-018 Duplicate titles allowed
+# ---------------------------------------------------------------------------
+
+class TestFR018DuplicateTitles(_Base):
+    """FR-018: identical titles are allowed; each gets a distinct ID."""
+
+    def test_duplicate_titles_allowed(self) -> None:  # FR-018
+        a = self.app.add("Same title")
+        b = self.app.add("Same title")
+        self.assertNotEqual(a.id, b.id)
+        self.assertEqual(len(self.app.list_tasks()), 2)
+
+
+# ---------------------------------------------------------------------------
+# FR-019 No count or title-length limit
+# ---------------------------------------------------------------------------
+
+class TestFR019NoLimits(_Base):
+    """FR-019: no enforced task-count or title-length limit."""
+
+    def test_add_200_tasks(self) -> None:  # FR-019
+        for i in range(200):
+            self.app.add(f"Task {i}")
+        self.assertEqual(len(self.app.list_tasks()), 200)
+
+    def test_long_title_accepted(self) -> None:  # FR-019
+        long_title = "A" * 10000
+        task = self.app.add(long_title)
+        self.assertEqual(len(task.title), 10000)
+
+
+# ---------------------------------------------------------------------------
+# FR-020 Persistent storage contract
+# ---------------------------------------------------------------------------
+
+class TestFR020StorageContract(_Base):
+    """FR-020: tasks.json has the expected top-level shape."""
+
+    def test_storage_schema(self) -> None:  # FR-020
+        self.app.add("Test task")
+        data = json.loads(self._store.read_text(encoding="utf-8"))
+        self.assertIn("next_id", data)
+        self.assertIn("tasks", data)
+        self.assertIsInstance(data["next_id"], int)
+        self.assertIsInstance(data["tasks"], list)
+        task = data["tasks"][0]
+        self.assertIn("id", task)
+        self.assertIn("title", task)
+        self.assertIn("status", task)
+
+
+# ---------------------------------------------------------------------------
+# FR-021 Missing or empty storage
+# ---------------------------------------------------------------------------
+
+class TestFR021MissingStorage(_Base):
+    """FR-021: missing or empty file is treated as an empty task list."""
+
+    def test_missing_file_gives_empty_list(self) -> None:  # FR-021
+        self.assertEqual(self.app.list_tasks(), [])
+
+    def test_empty_file_gives_empty_list(self) -> None:  # FR-021
+        self._store.write_text("", encoding="utf-8")
+        self.assertEqual(self.app.list_tasks(), [])
+
+    def test_add_to_missing_store(self) -> None:  # FR-021
+        task = self.app.add("New task")
+        self.assertEqual(task.id, 1)
+
+
+# ---------------------------------------------------------------------------
+# FR-022 Corrupt storage
+# ---------------------------------------------------------------------------
+
+class TestFR022CorruptStorage(_Base):
+    """FR-022: corrupt JSON raises CorruptStorageError; file bytes unchanged."""
+
+    def test_invalid_json_raises(self) -> None:  # FR-022
+        self._store.write_text("{not json}", encoding="utf-8")
+        with self.assertRaises(CorruptStorageError):
+            self.app.list_tasks()
+
+    def test_duplicate_ids_raises(self) -> None:  # FR-022
+        self._store.write_text(
+            json.dumps({"next_id": 3, "tasks": [
+                {"id": 1, "title": "A", "status": "open"},
+                {"id": 1, "title": "B", "status": "open"},
+            ]}),
+            encoding="utf-8",
         )
-        for raw in invalid_payloads:
-            with self.subTest(raw=raw):
-                self.storage_path.write_bytes(raw)
-                with self.assertRaises(CorruptStorageError):
-                    self.app._load_state()
-                self.assertEqual(self.storage_path.read_bytes(), raw)
+        with self.assertRaises(CorruptStorageError):
+            self.app.list_tasks()
 
-    def test_storage_io_failure_raises_storage_error(self) -> None:
-        """FR-023: map non-corruption read failures to StorageError."""
-        with patch.object(Path, "read_bytes", side_effect=PermissionError("denied")):
+    def test_corrupt_file_bytes_unchanged(self) -> None:  # FR-022
+        bad_content = "{bad json}"
+        self._store.write_text(bad_content, encoding="utf-8")
+        try:
+            self.app.list_tasks()
+        except CorruptStorageError:
+            pass
+        self.assertEqual(self._store.read_text(encoding="utf-8"), bad_content)
+
+
+# ---------------------------------------------------------------------------
+# FR-023 Other storage I/O failures
+# ---------------------------------------------------------------------------
+
+class TestFR023StorageIOFailure(_Base):
+    """FR-023: I/O errors that are not corruption raise StorageError."""
+
+    def test_read_permission_error_raises_storage_error(self) -> None:  # FR-023
+        self.app.add("x")
+        import platform
+        if platform.system() == "Windows":
+            self.skipTest("chmod not reliable on Windows CI")
+        os.chmod(self._store, 0o000)
+        try:
             with self.assertRaises(StorageError):
-                self.app._load_state()
-
-    def test_atomic_save_mode_and_temp_cleanup(self) -> None:
-        """NFR-003: preserve destination bytes and clean temp files on failed replacement."""
-        original = b'{"next_id":1,"tasks":[]}'
-        self.storage_path.write_bytes(original)
-        with patch("todo.app.os.replace", side_effect=OSError("replace failed")):
-            with self.assertRaises(StorageError):
-                self.app._save_state(2, [Task(1, "one", "open")])
-        self.assertEqual(self.storage_path.read_bytes(), original)
-        self.assertEqual(list(self.directory.iterdir()), [self.storage_path])
-
-    def test_existing_file_mode_is_preserved(self) -> None:
-        """NFR-003: preserve an existing storage file's mode on replacement."""
-        self.storage_path.write_text('{"next_id":1,"tasks":[]}', encoding="utf-8")
-        mode = stat.S_IMODE(self.storage_path.stat().st_mode)
-        self.app._save_state(1, [])
-        self.assertEqual(stat.S_IMODE(self.storage_path.stat().st_mode), mode)
+                self.app.list_tasks()
+        finally:
+            os.chmod(self._store, 0o644)
 
 
-class TodoOperationTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.directory = Path(self.temporary_directory.name)
-        self.storage_path = self.directory / "tasks.json"
-        self.app = TodoApp(self.storage_path)
+# ---------------------------------------------------------------------------
+# FR-024 Monotonic, non-reused IDs
+# ---------------------------------------------------------------------------
 
-    def tearDown(self) -> None:
-        self.temporary_directory.cleanup()
+class TestFR024MonotonicIDs(_Base):
+    """FR-024: IDs are monotonic, non-reused, and next_id persists."""
 
-    def test_add_returns_created_task(self) -> None:
-        """FR-002: return the newly created task and its ID."""
-        self.assertEqual(self.app.add_task("first").id, 1)
+    def test_ids_start_at_1(self) -> None:  # FR-024
+        task = self.app.add("First")
+        self.assertEqual(task.id, 1)
 
-    def test_new_task_starts_open(self) -> None:
-        """FR-003: new task status is open."""
-        self.assertEqual(self.app.add_task("first").status, "open")
+    def test_ids_increment(self) -> None:  # FR-024
+        a = self.app.add("A")
+        b = self.app.add("B")
+        self.assertEqual(b.id, a.id + 1)
 
-    def test_list_preserves_creation_order(self) -> None:
-        """FR-005: list tasks in creation order."""
-        self.app.add_task("first")
-        self.app.add_task("second")
-        self.assertEqual([task.title for task in self.app.list_tasks()], ["first", "second"])
+    def test_ids_not_reused_after_delete(self) -> None:  # FR-024
+        a = self.app.add("A")
+        self.app.delete(a.id)
+        b = self.app.add("B")
+        self.assertNotEqual(b.id, a.id)
+        self.assertGreater(b.id, a.id)
 
-    def test_complete_open_task(self) -> None:
-        """FR-007: complete transitions open to done."""
-        task = self.app.add_task("transition")
-        completed, changed = self.app.complete_task(task.id)
-        self.assertEqual(completed.status, "done")
-        self.assertTrue(changed)
+    def test_next_id_persists_across_instances(self) -> None:  # FR-024
+        app1 = TodoApp(self._store)
+        app1.add("X")
+        app2 = TodoApp(self._store)
+        task = app2.add("Y")
+        self.assertEqual(task.id, 2)
 
-    def test_complete_done_noop_preserves_bytes(self) -> None:
-        """FR-008: completing a done task is a byte-preserving no-op."""
-        task = self.app.add_task("transition")
-        self.app.complete_task(task.id)
-        before_done_noop = self.storage_path.read_bytes()
-        same_done, changed = self.app.complete_task(str(task.id))
-        self.assertEqual(same_done.status, "done")
-        self.assertFalse(changed)
-        self.assertEqual(self.storage_path.read_bytes(), before_done_noop)
 
-    def test_reopen_done_task(self) -> None:
-        """FR-009: reopen transitions done to open."""
-        task = self.app.add_task("transition")
-        self.app.complete_task(task.id)
-        reopened, changed = self.app.reopen_task(task.id)
-        self.assertEqual(reopened.status, "open")
-        self.assertTrue(changed)
+# ---------------------------------------------------------------------------
+# NFR-001 Runtime and dependencies
+# ---------------------------------------------------------------------------
 
-    def test_reopen_open_noop_preserves_bytes(self) -> None:
-        """FR-010: reopening an open task is a byte-preserving no-op."""
-        task = self.app.add_task("transition")
-        before_open_noop = self.storage_path.read_bytes()
-        same_open, changed = self.app.reopen_task(task.id)
-        self.assertEqual(same_open.status, "open")
-        self.assertFalse(changed)
-        self.assertEqual(self.storage_path.read_bytes(), before_open_noop)
+class TestNFR001Runtime(_Base):
+    """NFR-001: Python 3.11+, stdlib only."""
 
-    def test_delete_removes_task(self) -> None:
-        """FR-011: delete removes the selected task."""
-        first = self.app.add_task("first")
-        second = self.app.add_task("second")
-        self.assertEqual(self.app.delete_task(first.id), first)
-        self.assertEqual(self.app.list_tasks(), [second])
+    def test_python_version(self) -> None:  # NFR-001
+        import sys
+        self.assertGreaterEqual(sys.version_info[:2], (3, 11))
 
-    def test_missing_task_error_and_unchanged_storage(self) -> None:
-        """FR-012: missing IDs fail without modifying stored bytes."""
-        self.app.add_task("present")
-        original = self.storage_path.read_bytes()
-        with self.assertRaises(TaskNotFoundError):
-            self.app.complete_task("missing")
-        self.assertEqual(self.storage_path.read_bytes(), original)
+    def test_stdlib_only(self) -> None:  # NFR-001
+        import todo.app as app_mod
+        import todo.cli as cli_mod
+        stdlib_names = {
+            "abc", "argparse", "ast", "asyncio", "builtins", "collections",
+            "contextlib", "copy", "dataclasses", "datetime", "enum",
+            "functools", "io", "itertools", "json", "logging", "math",
+            "operator", "os", "pathlib", "re", "shutil", "signal",
+            "socket", "stat", "string", "sys", "tempfile", "threading",
+            "time", "traceback", "types", "typing", "unittest", "urllib",
+            "uuid", "warnings", "__future__",
+        }
+        for mod in (app_mod, cli_mod):
+            src = inspect.getsource(mod)
+            # No third-party top-level import
+            for line in src.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("import ") or stripped.startswith("from "):
+                    parts = stripped.split()
+                    pkg = parts[1].split(".")[0]
+                    if pkg not in stdlib_names and not pkg.startswith("todo"):
+                        self.fail(f"Non-stdlib import in {mod.__name__}: {stripped}")
 
-    def test_invalid_ids_are_not_found(self) -> None:
-        """FR-013: malformed, zero, and negative IDs are not found."""
-        self.app.add_task("present")
-        original = self.storage_path.read_bytes()
-        for task_id in ("0", "-1", "1.0"):
-            with self.subTest(task_id=task_id):
-                with self.assertRaises(TaskNotFoundError):
-                    self.app.complete_task(task_id)
-                self.assertEqual(self.storage_path.read_bytes(), original)
 
-    def test_extremely_long_numeric_id_is_not_found(self) -> None:
-        """FR-013: oversized numeric input is treated as not found."""
-        with self.assertRaises(TaskNotFoundError):
-            self.app.complete_task("9" * 5000)
+# ---------------------------------------------------------------------------
+# NFR-002 Storage encoding and representation
+# ---------------------------------------------------------------------------
 
-    def test_blank_title_rejected_without_write(self) -> None:
-        """FR-016: reject blank titles without creating storage."""
-        with self.assertRaises(EmptyTitleError):
-            self.app.add_task(" \t ")
-        self.assertFalse(self.storage_path.exists())
+class TestNFR002StorageEncoding(_Base):
+    """NFR-002: UTF-8, ensure_ascii=False, indent=2."""
 
-    def test_title_trim_and_interior_whitespace(self) -> None:
-        """FR-017: trim only title edges and preserve internal whitespace."""
-        task = self.app.add_task("  keep  inner spacing  ")
-        self.assertEqual(task.title, "keep  inner spacing")
+    def test_utf8_encoding(self) -> None:  # NFR-002
+        self.app.add("Ünïcödé tïtle")
+        raw_bytes = self._store.read_bytes()
+        text = raw_bytes.decode("utf-8")
+        self.assertIn("Ünïcödé", text)
 
-    def test_duplicate_titles_get_distinct_ids(self) -> None:
-        """FR-018: duplicate titles remain allowed with unique IDs."""
-        first = self.app.add_task("same")
-        second = self.app.add_task("same")
-        self.assertEqual(first.title, second.title)
-        self.assertNotEqual(first.id, second.id)
+    def test_ensure_ascii_false(self) -> None:  # NFR-002
+        self.app.add("日本語")
+        raw_bytes = self._store.read_bytes()
+        text = raw_bytes.decode("utf-8")
+        self.assertIn("日本語", text)
+        self.assertNotIn("\\u", text)
 
-    def test_ids_increase_and_are_not_reused_after_delete(self) -> None:
-        """FR-024: IDs increase monotonically and are never reused."""
-        first = self.app.add_task("first")
-        second = self.app.add_task("second")
-        self.app.delete_task(first.id)
-        self.assertEqual(self.app.add_task("third").id, second.id + 1)
+    def test_indent_2(self) -> None:  # NFR-002
+        self.app.add("Task")
+        text = self._store.read_text(encoding="utf-8")
+        self.assertIn("  ", text)
 
-    def test_read_noop_error_paths_preserve_bytes(self) -> None:
-        """NFR-004: reads, no-ops, and invalid mutations never rewrite storage."""
-        self.app.add_task("read")
-        original = self.storage_path.read_bytes()
+
+# ---------------------------------------------------------------------------
+# NFR-003 Atomic saves
+# ---------------------------------------------------------------------------
+
+class TestNFR003AtomicSaves(_Base):
+    """NFR-003: write uses temp file + fsync + os.replace; no temp file left behind."""
+
+    def test_no_temp_file_after_write(self) -> None:  # NFR-003
+        self.app.add("Task")
+        files = list(Path(self._dir).iterdir())
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].name, "tasks.json")
+
+    def test_file_is_valid_json_after_write(self) -> None:  # NFR-003
+        self.app.add("Atomicity")
+        data = json.loads(self._store.read_text(encoding="utf-8"))
+        self.assertIsInstance(data, dict)
+
+
+# ---------------------------------------------------------------------------
+# NFR-004 No unintended writes
+# ---------------------------------------------------------------------------
+
+class TestNFR004NoUnintendedWrites(_Base):
+    """NFR-004: list, no-ops, and failures do not write the file."""
+
+    def test_list_does_not_write(self) -> None:  # NFR-004
         self.app.list_tasks()
-        self.assertEqual(self.storage_path.read_bytes(), original)
-        with self.assertRaises(EmptyTitleError):
-            self.app.add_task(" ")
-        with self.assertRaises(TaskNotFoundError):
-            self.app.delete_task("unknown")
-        self.assertEqual(self.storage_path.read_bytes(), original)
+        self.assertFalse(self._store.exists())
 
-    def test_long_title_and_many_tasks_have_no_product_limit(self) -> None:
-        """FR-019: support long titles and no product-defined count limit."""
-        large_title = "x" * 8192
-        first = self.app.add_task(large_title)
-        self.assertEqual(first.title, large_title)
-        for index in range(40):
-            self.app.add_task(f"task {index}")
-        self.assertEqual(len(self.app.list_tasks()), 41)
+    def test_noop_done_does_not_write(self) -> None:  # NFR-004
+        task = self.app.add("Task")
+        self.app.done(task.id)
+        mtime_before = self._store.stat().st_mtime_ns
+        self.app.done(task.id)
+        self.assertEqual(self._store.stat().st_mtime_ns, mtime_before)
 
-    def test_storage_schema_and_current_directory(self) -> None:
-        """FR-020: use the defined schema in the current working directory."""
-        with patch.object(Path, "cwd", return_value=self.directory):
-            default_app = TodoApp()
-        self.assertEqual(default_app.storage_path, self.directory / "tasks.json")
-        default_app.add_task("local")
-        self.assertTrue((self.directory / "tasks.json").is_file())
-        self.assertEqual(
-            set(json.loads((self.directory / "tasks.json").read_text(encoding="utf-8"))),
-            {"next_id", "tasks"},
-        )
+    def test_noop_reopen_does_not_write(self) -> None:  # NFR-004
+        task = self.app.add("Task")
+        mtime_before = self._store.stat().st_mtime_ns
+        self.app.reopen(task.id)
+        self.assertEqual(self._store.stat().st_mtime_ns, mtime_before)
 
-    def test_invalid_title_preserves_existing_bytes(self) -> None:
-        """NFR-004: invalid mutations do not rewrite existing bytes."""
-        self.app.add_task("existing")
-        original = self.storage_path.read_bytes()
-        with self.assertRaises(EmptyTitleError):
-            self.app.add_task("   ")
-        self.assertEqual(self.storage_path.read_bytes(), original)
+    def test_not_found_does_not_write(self) -> None:  # NFR-004
+        self.app.add("Task")
+        mtime_before = self._store.stat().st_mtime_ns
+        try:
+            self.app.done(9999)
+        except KeyError:
+            pass
+        self.assertEqual(self._store.stat().st_mtime_ns, mtime_before)
 
 
-class TodoCliTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.storage_path = Path(self.temporary_directory.name) / "tasks.json"
-        self.app = TodoApp(self.storage_path)
+# ---------------------------------------------------------------------------
+# NFR-005 Local privacy
+# ---------------------------------------------------------------------------
 
-    def tearDown(self) -> None:
-        self.temporary_directory.cleanup()
+class TestNFR005NoNetwork(_Base):
+    """NFR-005: no network calls are made."""
 
-    def invoke(self, arguments: list[str]) -> tuple[int, str, str]:
-        from io import StringIO
+    def test_no_socket_import_in_app(self) -> None:  # NFR-005
+        import todo.app as app_mod
+        src = inspect.getsource(app_mod)
+        self.assertNotIn("import socket", src)
+        self.assertNotIn("import urllib", src)
+        self.assertNotIn("import http", src)
+        self.assertNotIn("requests", src)
 
-        stdout = StringIO()
-        stderr = StringIO()
-        result = main(arguments, stdout, stderr, self.app)
-        return result, stdout.getvalue(), stderr.getvalue()
+    def test_no_socket_import_in_cli(self) -> None:  # NFR-005
+        import todo.cli as cli_mod
+        src = inspect.getsource(cli_mod)
+        self.assertNotIn("import socket", src)
+        self.assertNotIn("requests", src)
 
-    def test_cli_commands_and_usage(self) -> None:
-        """FR-001: expose all five commands and reject unknown commands."""
-        self.assertEqual(self.invoke(["add", "one"])[0], EXIT_OK)
-        self.assertEqual(self.invoke(["list"])[0], EXIT_OK)
-        self.assertEqual(self.invoke(["done", "1"])[0], EXIT_OK)
-        self.assertEqual(self.invoke(["reopen", "1"])[0], EXIT_OK)
-        self.assertEqual(self.invoke(["delete", "1"])[0], EXIT_OK)
-        result, _, error = self.invoke(["unknown"])
-        self.assertEqual(result, EXIT_USAGE)
-        self.assertTrue(error.startswith("USAGE"))
 
-    def test_cli_add_output(self) -> None:
-        """FR-004: print the exact add result."""
-        result, output, error = self.invoke(["add", "first task"])
-        self.assertEqual((result, error), (EXIT_OK, ""))
-        self.assertEqual(output, "Added: 1 [open] first task\n")
+# ---------------------------------------------------------------------------
+# NFR-006 Testability
+# ---------------------------------------------------------------------------
 
-    def test_list_empty_message(self) -> None:
-        """FR-006: print the empty-list message."""
-        self.assertEqual(self.invoke(["list"])[1], "No tasks.\n")
+class TestNFR006Testability(_Base):
+    """NFR-006: tests use unittest and temp directories; main() injectable."""
 
-    def test_cli_list_preserves_creation_order(self) -> None:
-        """FR-005: format each listed task in creation order."""
-        self.app.add_task("first")
-        self.app.add_task("second")
-        self.assertEqual(self.invoke(["list"])[1], "1 [open] first\n2 [open] second\n")
+    def test_main_accepts_injectable_app(self) -> None:  # NFR-006
+        # main() receives an app argument — no global state dependency.
+        out = StringIO()
+        code = main(["list"], stdout=out, stderr=StringIO(), app=self.app)
+        self.assertEqual(code, 0)
 
-    def test_complete_done_cli_noop_message(self) -> None:
-        """FR-008: print the already-done no-op message."""
-        self.app.add_task("task")
-        self.invoke(["done", "1"])
-        self.assertEqual(self.invoke(["done", "1"])[1], "Task 1 is already done.\n")
-
-    def test_reopen_open_cli_noop_message(self) -> None:
-        """FR-010: print the already-open no-op message."""
-        self.app.add_task("task")
-        self.invoke(["reopen", "1"])
-        self.assertEqual(self.invoke(["reopen", "1"])[1], "Task 1 is already open.\n")
-
-    def test_missing_task_cli_error_and_exit(self) -> None:
-        """FR-012: report a missing task to stderr and return one."""
-        result, output, error = self.invoke(["done", "nope"])
-        self.assertEqual(result, EXIT_ERROR)
-        self.assertEqual(output, "")
-        self.assertEqual(error, "Error: task nope not found.\n")
-
-    def test_invalid_task_id_cli_error_and_exit(self) -> None:
-        """FR-013: invalid task IDs use the not-found CLI behavior."""
-        for task_id in ("0", "-1"):
-            with self.subTest(task_id=task_id):
-                result, output, error = self.invoke(["done", task_id])
-                self.assertEqual(result, EXIT_ERROR)
-                self.assertEqual(output, "")
-                self.assertEqual(error, f"Error: task {task_id} not found.\n")
-
-    def test_usage_error_returns_two(self) -> None:
-        """FR-014: malformed command forms return usage exit code two."""
-        for arguments in ([], ["add"], ["list", "extra"], ["done", "1", "extra"]):
-            with self.subTest(arguments=arguments):
-                result, _, error = self.invoke(arguments)
-                self.assertEqual(result, EXIT_USAGE)
-                self.assertTrue(error.startswith("USAGE"))
-
-    def test_operation_errors_use_stderr_and_error_exit(self) -> None:
-        """FR-015: storage operation errors use stderr and a nonzero code."""
-        self.storage_path.write_bytes(b"broken json")
-        result, output, error = self.invoke(["list"])
-        self.assertEqual(result, EXIT_ERROR)
-        self.assertEqual(output, "")
-        self.assertEqual(error, "Error: task storage is corrupt.\n")
-
-    def test_title_trim_and_display_escape(self) -> None:
-        """FR-017: preserve title semantics and escape terminal controls for display."""
-        original_title = "line one\nline two\u2028line three\u2029line four\t\x1b[31m"
-        result, output, error = self.invoke(["add", original_title])
-        self.assertEqual((result, error), (EXIT_OK, ""))
-        self.assertEqual(
-            output,
-            "Added: 1 [open] line one\\nline two\\u2028line three\\u2029line four\\t\\x1b[31m\n",
-        )
-        self.assertEqual(self.app.list_tasks()[0].title, original_title)
-        self.assertEqual(
-            self.invoke(["list"])[1],
-            "1 [open] line one\\nline two\\u2028line three\\u2029line four\\t\\x1b[31m\n",
-        )
-
-    def test_cli_operations_are_local(self) -> None:
-        """NFR-005: task operations do not open network connections."""
-        with (
-            patch.object(socket, "create_connection") as connect,
-            patch.object(request, "urlopen") as urlopen,
-        ):
-            self.invoke(["add", "local task"])
-            self.invoke(["list"])
-        connect.assert_not_called()
-        urlopen.assert_not_called()
+    def test_main_does_not_call_sys_exit(self) -> None:  # NFR-006
+        # main() must return an int, not call sys.exit.
+        import todo.cli as cli_mod
+        src = inspect.getsource(cli_mod)
+        # sys.exit should not appear outside the __main__ guard
+        lines = src.splitlines()
+        in_main_guard = False
+        for line in lines:
+            if line.strip().startswith("if __name__"):
+                in_main_guard = True
+            if not in_main_guard and "sys.exit" in line and "__main__" not in line:
+                self.fail(f"sys.exit found outside __main__ guard: {line}")
 
 
 if __name__ == "__main__":

@@ -552,7 +552,7 @@ def next_step(root: Path) -> str:
     return "\n".join(
         [
             f"ACTIVE phase: {phase_id}",
-            f"Run prompt: /{phase_id} ({phase['prompt']})",
+            f"Run prompt: /{'pr' if phase_id == 'pr' else 'run'} ({phase['prompt']})",
             f"Must produce: {artifacts}",
             f"Then run: python orchestrator.py submit {phase_id}",
         ]

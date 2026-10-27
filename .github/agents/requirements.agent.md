@@ -125,4 +125,4 @@ Verify that:
 2. If submission is refused, read the validation feedback and fix only `artifacts/requirements.md`. Retry submission only after correcting the reported issue.
 3. After successful submission, stop and print exactly:
 
-Awaiting human approval. Run: python orchestrator.py approve requirements --by &lt;your-name&gt;
+Awaiting human approval. Run: python orchestrator.py approve requirements --by <your-name>

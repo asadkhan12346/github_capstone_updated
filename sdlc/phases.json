@@ -4,35 +4,35 @@
       "id": "requirements",
       "order": 1,
       "agent": ".github/agents/requirements.agent.md",
-      "prompt": ".github/prompts/requirements.prompt.md",
+      "prompt": ".github/prompts/run.prompt.md",
       "owns": ["artifacts/requirements.md"]
     },
     {
       "id": "architecture",
       "order": 2,
       "agent": ".github/agents/architecture.agent.md",
-      "prompt": ".github/prompts/architecture.prompt.md",
+      "prompt": ".github/prompts/run.prompt.md",
       "owns": ["artifacts/architecture.md"]
     },
     {
       "id": "design-review",
       "order": 3,
       "agent": ".github/agents/design-review.agent.md",
-      "prompt": ".github/prompts/design-review.prompt.md",
+      "prompt": ".github/prompts/run.prompt.md",
       "owns": ["artifacts/design-review.md"]
     },
     {
       "id": "planning",
       "order": 4,
       "agent": ".github/agents/planning.agent.md",
-      "prompt": ".github/prompts/planning.prompt.md",
+      "prompt": ".github/prompts/run.prompt.md",
       "owns": ["artifacts/implementation-plan.md"]
     },
     {
       "id": "implementation",
       "order": 5,
       "agent": ".github/agents/implementation.agent.md",
-      "prompt": ".github/prompts/implementation.prompt.md",
+      "prompt": ".github/prompts/run.prompt.md",
       "owns": [
         "todo/__init__.py",
         "todo/app.py",
@@ -44,14 +44,14 @@
       "id": "review",
       "order": 6,
       "agent": ".github/agents/review.agent.md",
-      "prompt": ".github/prompts/review.prompt.md",
+      "prompt": ".github/prompts/run.prompt.md",
       "owns": ["artifacts/review.md"]
     },
     {
       "id": "verify",
       "order": 7,
       "agent": ".github/agents/verify.agent.md",
-      "prompt": ".github/prompts/verify.prompt.md",
+      "prompt": ".github/prompts/run.prompt.md",
       "owns": ["artifacts/verify.md"]
     },
     {

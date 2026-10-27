@@ -7,7 +7,7 @@ Run `python orchestrator.py status`, `python -m unittest discover -s tests -v`, 
 Expected: requirements is ACTIVE, seven phases are LOCKED, tests pass, compilation exits 0, and every audit check is PASS. Point: the audit is intentionally valid only before phase outputs exist.
 
 ## 2. Requirements
-Run `python orchestrator.py next`, then invoke `/requirements` in Copilot Chat. Answer its single numbered clarification message.
+Run `python orchestrator.py next`, then invoke `/run` in Copilot Chat. When the orchestrator prompts for the Confluence page URL, provide it. Answer the clarification questions before the agent writes the artifact.
 Expected: `artifacts/requirements.md` is submitted and the agent prints the awaiting-approval instruction. Point: do not let the agent guess requirement details.
 
 ## 3. Approve requirements
@@ -15,27 +15,27 @@ Review the artifact. In a human terminal run `python orchestrator.py approve req
 Expected: requirements becomes APPROVED and architecture becomes ACTIVE. Point: agent submission is not approval.
 
 ## 4. Architecture
-Run `python orchestrator.py next`, then `/architecture`.
+Run `python orchestrator.py next`, then invoke `/run`. The orchestrator identifies the active phase and executes the architecture specialist.
 Expected: a component design, coverage table, and Mermaid diagram are submitted. Point: architecture reads only approved requirements.
 
 ## 5. Design review
-After approving architecture, run `/design-review`.
+After approving architecture, run `python orchestrator.py next`, then invoke `/run`. The orchestrator routes to the design-review specialist.
 Expected: findings, alternatives, security/usability reviews, and a final verdict. Point: on REVISE, either reject the review or remove later outputs and reopen architecture; do not silently accept a failing verdict.
 
 ## 6. Planning
-After approving design review, run `/planning`.
+After approving design review, run `python orchestrator.py next`, then invoke `/run`. If any High/Med design-review findings are unresolved, provide decisions when the orchestrator asks.
 Expected: ordered tasks with files, requirement IDs, and checkable done-when criteria. Point: unresolved High/Med findings require a human decision.
 
 ## 7. Implementation
-After approving planning, run `/implementation`.
+After approving planning, run `python orchestrator.py next`, then invoke `/run`. The orchestrator routes to the implementation specialist, which follows the approved plan task by task.
 Expected: only the four implementation-owned files are changed, with requirement-tagged tests. Point: implementation stops if the approved plan is inconsistent.
 
 ## 8. Review
-After approving implementation, run `/review`.
+After approving implementation, run `python orchestrator.py next`, then invoke `/run`. The orchestrator routes to the review specialist, which reads the implementation read-only.
 Expected: read-only findings, traceability for every requirement, plan adherence, and actual unittest/compileall evidence. Point: the reviewer does not fix its findings.
 
 ## 9. Verification
-After approving review, run `/verify`.
+After approving review, run `python orchestrator.py next`, then invoke `/run`. The orchestrator routes to the verify specialist, which runs each requirement check and pastes real command output.
 Expected: each requirement has an expected result, a real command/output block, and PASS/FAIL. Point: never approve `Result: FAIL`.
 
 ## 10. PR Stage A

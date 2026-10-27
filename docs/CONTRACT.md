@@ -10,13 +10,13 @@ The pipeline's controls are demo-grade. The orchestrator validates state and art
 
 | # | id | agent | prompt | owns |
 |---|----|----|----|----|
-| 1 | requirements | `.github/agents/requirements.agent.md` | `.github/prompts/requirements.prompt.md` | `artifacts/requirements.md` |
-| 2 | architecture | `.github/agents/architecture.agent.md` | `.github/prompts/architecture.prompt.md` | `artifacts/architecture.md` |
-| 3 | design-review | `.github/agents/design-review.agent.md` | `.github/prompts/design-review.prompt.md` | `artifacts/design-review.md` |
-| 4 | planning | `.github/agents/planning.agent.md` | `.github/prompts/planning.prompt.md` | `artifacts/implementation-plan.md` |
-| 5 | implementation | `.github/agents/implementation.agent.md` | `.github/prompts/implementation.prompt.md` | `todo/__init__.py`, `todo/app.py`, `todo/cli.py`, `tests/test_todo.py` |
-| 6 | review | `.github/agents/review.agent.md` | `.github/prompts/review.prompt.md` | `artifacts/review.md` |
-| 7 | verify | `.github/agents/verify.agent.md` | `.github/prompts/verify.prompt.md` | `artifacts/verify.md` |
+| 1 | requirements | `.github/agents/requirements.agent.md` | `.github/prompts/run.prompt.md` | `artifacts/requirements.md` |
+| 2 | architecture | `.github/agents/architecture.agent.md` | `.github/prompts/run.prompt.md` | `artifacts/architecture.md` |
+| 3 | design-review | `.github/agents/design-review.agent.md` | `.github/prompts/run.prompt.md` | `artifacts/design-review.md` |
+| 4 | planning | `.github/agents/planning.agent.md` | `.github/prompts/run.prompt.md` | `artifacts/implementation-plan.md` |
+| 5 | implementation | `.github/agents/implementation.agent.md` | `.github/prompts/run.prompt.md` | `todo/__init__.py`, `todo/app.py`, `todo/cli.py`, `tests/test_todo.py` |
+| 6 | review | `.github/agents/review.agent.md` | `.github/prompts/run.prompt.md` | `artifacts/review.md` |
+| 7 | verify | `.github/agents/verify.agent.md` | `.github/prompts/run.prompt.md` | `artifacts/verify.md` |
 | 8 | pr | `.github/agents/pr.agent.md` | `.github/prompts/pr.prompt.md` | `artifacts/pr.md`, `CHANGELOG.md` |
 
 `artifacts/requirements.md`, the eight phase outputs, the phase IDs, and their sequence are fixed. The pipeline does not encode the sample story's requirements; only implementation ownership names the sample app files.

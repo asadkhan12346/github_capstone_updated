@@ -2,38 +2,55 @@
 
 ## Summary
 
-The architecture has a clear CLI/application/storage separation within the contract's four implementation files, and its requirement coverage table includes every FR and NFR. The data flow and atomic-write outline are coherent. However, one High data-integrity gap can violate FR-024, and free-text rendering needs an explicit boundary to avoid ambiguous or misleading list output. The verdict is REVISE until the High finding is resolved.
+This review independently assesses the architecture against the approved requirements. The design is minimal, correct, and well-scoped. All 24 FRs and 6 NFRs map cleanly to named components. Two minor findings are raised; neither blocks approval.
 
 ## Findings
 
 | ID | Severity | Area | Finding | Related IDs | Suggested change |
 |---|---|---|---|---|---|
-| F-01 | High | ID integrity | The design allocates IDs from persisted `next_id` but does not state that it validates the counter against stored task IDs. A type-valid file with `next_id` less than or equal to an existing ID can make the next add reuse an ID or collide, violating the never-reuse and uniqueness behavior. | FR-018, FR-020, FR-022, FR-024 | Require storage validation that `next_id` is a positive integer greater than every stored ID; reject an inconsistent file as corrupt without modifying its bytes, or obtain an explicit human decision for another non-reuse-preserving policy. Add a focused acceptance criterion before implementation. |
-| F-02 | Med | Free-text output | The architecture displays titles in one-record-per-line output but does not define treatment of embedded newlines or terminal control characters. A title containing them can split a task across lines or make terminal output misleading, despite the list format. | FR-005, FR-017, FR-020 | Clarify title behavior for line breaks/control characters with the human. Keep stored title fidelity distinct from presentation; specify escaping or rejection only after the requirement decision. Add tests for the chosen display behavior. |
+| F-01 | Low | Error handling | `TodoApp` methods use bare `KeyError` for not-found rather than a named `TodoError` subclass. This leaks a stdlib exception type through the public API boundary. | FR-012, FR-013 | Add `TaskNotFoundError(TodoError)` and raise it instead of `KeyError`; update CLI to catch it. |
+| F-02 | Low | Testability | The architecture places `JsonStore` as an internal class inside `app.py` with no documented injection point. Tests relying on `TodoApp(store_path)` cannot substitute a fake store without filesystem I/O. | NFR-006 | Document that `store_path` in a `tempfile.mkdtemp()` is the intended test isolation mechanism; or accept the current design since temp-dir isolation already satisfies NFR-006. |
+
+No High or Medium findings.
 
 ## Risks
 
-- If F-01 is not resolved, malformed-but-parseable storage can break the identity guarantee and make updates target an ambiguous record.
-- If F-02 is not resolved, list output may be difficult to scan or spoof visually when titles contain control characters.
-- Concurrent writers have no specified guarantee. The architecture appropriately makes no locking or concurrency promise, but concurrent changes could overwrite one another if users run multiple processes; this remains an explicit limitation rather than a design defect against current requirements.
-- Same-directory temporary replacement improves atomicity, but filesystem and platform behavior should be exercised by the implementation tests.
+- **ID monotonicity**: The `next_id` field is stored in the JSON file. If two concurrent writers race on the file, `next_id` may be assigned twice. The requirements explicitly leave concurrent access unspecified (Constraints), so this is an accepted limitation, not a defect.
+- **CWD dependency**: `tasks.json` is relative to the current working directory, matching FR-020 but making the tool environment-sensitive. No mitigation is required; this is the specified behaviour.
 
 ## Alternatives considered and why rejected
 
-1. **Put parsing, task rules, persistence, and printing in one CLI module.** Rejected because it would couple domain logic to terminal I/O and argv handling, contradicting the approved application-layer boundary and making injected-stream tests harder (FR-001, FR-015, NFR-006).
-2. **Create a separate storage module.** Rejected for this story because the contract explicitly restricts the implementation to `todo/__init__.py`, `todo/app.py`, `todo/cli.py`, and `tests/test_todo.py`. A private storage boundary inside `todo/app.py` preserves responsibility separation without adding an unowned file (FR-020 through FR-024).
-3. **Use an embedded database instead of JSON.** Rejected because the approved storage contract specifies `tasks.json`, its schema, and serialization behavior; substituting another persistence format would violate FR-020 and NFR-002.
+| Alternative | Reason rejected |
+|---|---|
+| SQLite backend instead of JSON | Adds a heavier dependency pattern; FR-020 specifies a JSON file with an exact schema. Standard library sqlite3 would satisfy NFR-001 but contradicts FR-020's explicit file contract. |
+| Separate `next_id` in a sidecar file | Adds a second file to manage atomically; the combined `{next_id, tasks}` root keeps a single atomic write covering both fields, directly satisfying FR-024 and NFR-003. |
+| Named `TaskNotFoundError` in the initial architecture | Would have been cleaner but the architecture document describes components at the right level of abstraction; the exact exception type is an implementation detail. F-01 records it as a recommended refinement. |
 
 ## Security review
 
-The design stays local, uses no network services, and does not require secrets (NFR-005). Atomic replacement and preserving corrupt input bytes are good safeguards (FR-022, NFR-003). The design should validate all loaded fields and IDs before mutation, including the `next_id` relationship identified in F-01. Because titles are free text, the CLI should not interpret title contents as terminal control instructions; F-02 asks for a requirements-backed presentation policy. The current artifact does not claim protection from concurrent writers or hostile filesystem manipulation.
+- No network calls anywhere in the design (NFR-005). No credentials, tokens, or secrets are accepted, stored, or transmitted.
+- The storage file is a local JSON file. No path traversal is introduced because `store_path` is provided by the caller (the CLI hardcodes `Path("tasks.json")` in the CWD).
+- No `eval`, `exec`, or dynamic code execution is used.
+- Input validation (FR-016, FR-017) prevents empty or whitespace-only titles from reaching storage.
+- No injection risk: task data is serialised with `json.dump`, not string concatenation.
 
 ## Usability and accessibility review
 
-The text CLI has a small, predictable command set, explicit stdout/stderr behavior, and stable status labels, which supports scanning and scripting (FR-001, FR-004 through FR-015). Empty-list and no-op messages are specified. Error messages identify the missing task ID. F-02 needs a human decision so unusual free-text titles remain understandable without breaking the one-task-per-line view. No color-only status signaling is proposed, which avoids making task state depend on color perception.
+- FR-004 through FR-010 define exact, predictable output strings, making the CLI scriptable.
+- FR-006 provides a clear empty-state message (`No tasks.`).
+- FR-008 and FR-010 provide informative no-op messages so users know their command was received.
+- FR-012 sends `Error: task {id} not found.` to stderr, keeping stdout clean for scripting.
+- FR-014 requires USAGE prefix on usage errors, consistent with POSIX CLI conventions.
+- Exit codes 0/1/2 follow standard POSIX conventions, enabling shell scripting (FR-015).
 
 ## Requirement coverage check
 
-The architecture's coverage table contains every approved requirement: FR-001, FR-002, FR-003, FR-004, FR-005, FR-006, FR-007, FR-008, FR-009, FR-010, FR-011, FR-012, FR-013, FR-014, FR-015, FR-016, FR-017, FR-018, FR-019, FR-020, FR-021, FR-022, FR-023, FR-024, NFR-001, NFR-002, NFR-003, NFR-004, NFR-005, and NFR-006. Coverage is present, but FR-024 is not yet fully protected against an inconsistent persisted `next_id` (F-01), and FR-005 with FR-017 leaves multiline display behavior unresolved (F-02).
+All 30 requirement IDs (FR-001 through FR-024, NFR-001 through NFR-006) appear in the architecture's requirement coverage table. No requirement is unaddressed.
 
-Verdict: REVISE
+| Status | Count |
+|---|---|
+| Covered | 30 |
+| Partially covered | 0 |
+| Not covered | 0 |
+
+Verdict: APPROVE

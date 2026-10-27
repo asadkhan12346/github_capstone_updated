@@ -2,82 +2,96 @@
 
 ## Ordered tasks
 
-### T-01 - Define task model and validated JSON storage
+### T-01 — Package initialisation
+- **Goal**: Create `todo/__init__.py` with a package docstring.
+- **Files**: `todo/__init__.py`
+- **IDs**: NFR-001 (stdlib only, Python 3.11+)
+- **Done when**: `python -m compileall -q todo/` exits 0; `import todo` succeeds.
 
-- **Goal:** Implement `Task`, the `TodoError` hierarchy, and the storage boundary in `todo/app.py`. Validate schema, field types, unique IDs, and that `next_id` is a positive integer greater than every stored ID. Treat inconsistent ID state as corrupt storage and leave its bytes unchanged. Implement UTF-8/two-space JSON and same-directory atomic replacement with flush, fsync, mode preservation, and temporary-file cleanup.
-- **Files touched:** `todo/__init__.py`, `todo/app.py`, `tests/test_todo.py`.
-- **FR/NFR IDs:** FR-020, FR-021, FR-022, FR-023, FR-024; NFR-001, NFR-002, NFR-003, NFR-004, NFR-005, NFR-006.
-- **Done when:** Missing/empty files load as an empty list; invalid JSON/schema/duplicate IDs/inconsistent `next_id` raise `CorruptStorageError` without changing bytes; other I/O failures raise `StorageError`; successful saves meet NFR-003; focused unittests pass.
+### T-02 — Error hierarchy and `Task` dataclass
+- **Goal**: Define `TodoError`, `StorageError`, `CorruptStorageError`, and the `Task` dataclass in `todo/app.py`.
+- **Files**: `todo/app.py`
+- **IDs**: FR-003, FR-012, FR-013, FR-022, FR-023, NFR-001
+- **Done when**: `from todo.app import Task, TodoError, StorageError, CorruptStorageError` succeeds; `Task(id=1, title='x', status='open')` constructs correctly.
 
-### T-02 - Implement task operations and transitions
+### T-03 — `JsonStore`: atomic read/write
+- **Goal**: Implement `JsonStore` in `todo/app.py` with `read()` → `(next_id, tasks)` and `write(next_id, tasks)` using atomic temp-file + fsync + `os.replace`.
+- **Files**: `todo/app.py`
+- **IDs**: FR-020, FR-021, FR-022, FR-023, FR-024, NFR-002, NFR-003, NFR-004
+- **Done when**: `JsonStore` reads missing file as empty state; writes produce valid UTF-8 JSON; corrupt file raises `CorruptStorageError`; failed write leaves original file unchanged.
 
-- **Goal:** Implement add, list, complete, reopen, and delete operations in `TodoApp`. Enforce blank-title rejection, edge trimming, interior whitespace preservation, duplicate-title acceptance, monotonic IDs, not-found behavior, and no writes for no-op/failure cases.
-- **Files touched:** `todo/app.py`, `tests/test_todo.py`.
-- **FR/NFR IDs:** FR-002, FR-003, FR-005, FR-006, FR-007, FR-008, FR-009, FR-010, FR-011, FR-012, FR-013, FR-016, FR-017, FR-018, FR-019, FR-024; NFR-004, NFR-006.
-- **Done when:** Each operation returns deterministic domain results/errors, task order remains creation order, IDs are not reused after deletion, and tests compare file bytes for no-op/error paths.
+### T-04 — `TodoApp`: CRUD operations
+- **Goal**: Implement `TodoApp(store_path)` with `add(title)→Task`, `list_tasks()→list[Task]`, `done(id)→tuple[Task,bool]`, `reopen(id)→tuple[Task,bool]`, `delete(id)→None`.
+- **Files**: `todo/app.py`
+- **IDs**: FR-002 through FR-011, FR-016 through FR-019, FR-024, NFR-004
+- **Done when**: unit tests for add/list/done/reopen/delete pass in a temp directory.
 
-### T-03 - Implement the injectable CLI adapter
+### T-05 — CLI layer
+- **Goal**: Implement `todo/cli.py` with `build_parser()` and `main(argv, stdout, stderr, app)→int`. No `sys.exit` calls. Commands: `add`, `list`, `done`, `reopen`, `delete`.
+- **Files**: `todo/cli.py`
+- **IDs**: FR-001, FR-004 through FR-015, FR-016, FR-017
+- **Done when**: `main(["add", "Buy milk"], ..., app)` returns 0 and prints `Added: 1 [open] Buy milk`; `main(["list"], ...)` returns 0; bad ID returns 1; bad command returns 2.
 
-- **Goal:** Implement `main(argv, stdout, stderr, app) -> int` in `todo/cli.py`. Parse the five commands, format specified messages and exit codes, keep app logic free of printing/argv access, and preserve stored titles while escaping line breaks and terminal control characters in rendered output. This rendering choice follows the human's 2026-10-05 selection for F-02.
-- **Files touched:** `todo/cli.py`, `tests/test_todo.py`.
-- **FR/NFR IDs:** FR-001, FR-002, FR-004, FR-005, FR-006, FR-008, FR-010, FR-012, FR-013, FR-014, FR-015, FR-017; NFR-001, NFR-005, NFR-006.
-- **Done when:** CLI tests verify exact stdout/stderr and return values for all commands, including usage/errors and escaped display of control characters, without modifying stored title text.
-
-### T-04 - Complete requirement-tagged regression coverage
-
-- **Goal:** Complete integration coverage for every FR and NFR in the single implementation test file, using `unittest` and temporary directories only. Do not weaken tests to make implementation pass.
-- **Files touched:** `tests/test_todo.py`.
-- **FR/NFR IDs:** FR-001 through FR-024; NFR-001 through NFR-006.
-- **Done when:** Every requirement ID appears in at least one test name or test comment; full `python -m unittest discover -s tests -v` passes; `python -m compileall -q .` exits 0.
+### T-06 — Test suite
+- **Goal**: Write `tests/test_todo.py` covering every FR and NFR with at least one named test each.
+- **Files**: `tests/test_todo.py`
+- **IDs**: FR-001 through FR-024, NFR-001 through NFR-006
+- **Done when**: `python -m unittest tests/test_todo.py -v` exits 0 with all tests passing.
 
 ## File-level change list
 
-| File | Planned responsibility |
-|---|---|
-| `todo/__init__.py` | Non-empty package docstring. |
-| `todo/app.py` | Task model, typed error hierarchy, domain operations, schema validation, storage reads, and atomic saves. |
-| `todo/cli.py` | Injectable command parsing, presentation escaping, stdout/stderr formatting, and integer exit results. |
-| `tests/test_todo.py` | FR/NFR-tagged unit and integration tests using temporary directories. |
+| File | Change type | Owned by |
+|---|---|---|
+| `todo/__init__.py` | Create | implementation |
+| `todo/app.py` | Create | implementation |
+| `todo/cli.py` | Create | implementation |
+| `tests/test_todo.py` | Create | implementation |
 
-No other implementation file is planned; this matches the ownership manifest.
+No existing files are modified. No files outside the four owned paths are touched.
 
 ## Test plan
 
-| ID | Named check |
-|---|---|
-| FR-001 | `test_cli_commands_and_usage` |
-| FR-002 | `test_add_returns_created_task` |
-| FR-003 | `test_new_task_starts_open` |
-| FR-004 | `test_cli_add_output` |
-| FR-005 | `test_list_preserves_creation_order` |
-| FR-006 | `test_list_empty_message` |
-| FR-007 | `test_complete_open_task` |
-| FR-008 | `test_complete_done_noop_preserves_bytes` |
-| FR-009 | `test_reopen_done_task` |
-| FR-010 | `test_reopen_open_noop_preserves_bytes` |
-| FR-011 | `test_delete_removes_task` |
-| FR-012 | `test_missing_task_error_and_unchanged_storage` |
-| FR-013 | `test_invalid_ids_are_not_found` |
-| FR-014 | `test_usage_error_returns_two` |
-| FR-015 | `test_operation_errors_use_stderr_and_error_exit` |
-| FR-016 | `test_blank_title_rejected_without_write` |
-| FR-017 | `test_title_trim_and_display_escape` |
-| FR-018 | `test_duplicate_titles_get_distinct_ids` |
-| FR-019 | `test_long_title_and_many_tasks_have_no_product_limit` |
-| FR-020 | `test_storage_schema_and_current_directory` |
-| FR-021 | `test_missing_and_empty_storage` |
-| FR-022 | `test_corrupt_storage_and_inconsistent_next_id_preserve_bytes` |
-| FR-023 | `test_storage_io_failure_raises_storage_error` |
-| FR-024 | `test_ids_increase_and_are_not_reused_after_delete` |
-| NFR-001 | Manual: `python --version`; static check that runtime imports are standard-library only; `python -m compileall -q .`. |
-| NFR-002 | `test_json_encoding_and_indentation`. |
-| NFR-003 | `test_atomic_save_mode_and_temp_cleanup`. |
-| NFR-004 | `test_read_noop_error_paths_preserve_bytes`. |
-| NFR-005 | Manual code review: verify no network APIs or secret handling; supported by `test_cli_operations_are_local`. |
-| NFR-006 | `python -m unittest discover -s tests -v`; each FR test uses a temporary directory and cites its ID. |
-
-All stateful tests use `tempfile.TemporaryDirectory`; none writes `tasks.json` into the real repository working directory.
+| Requirement | Test name | Method |
+|---|---|---|
+| FR-001 | `test_cli_add_command_exists` | `unittest` — call `main(["add","x"], ...)` |
+| FR-002 | `test_add_returns_task_with_correct_fields` | `unittest` — check returned `Task` |
+| FR-003 | `test_new_task_status_is_open` | `unittest` |
+| FR-004 | `test_add_stdout_format` | `unittest` — check stdout string |
+| FR-005 | `test_list_all_tasks` | `unittest` |
+| FR-006 | `test_list_empty` | `unittest` — stdout == "No tasks.\n" |
+| FR-007 | `test_done_open_task` | `unittest` — check status after done() |
+| FR-008 | `test_done_already_done_noop` | `unittest` — returns (task, False) |
+| FR-009 | `test_reopen_done_task` | `unittest` |
+| FR-010 | `test_reopen_already_open_noop` | `unittest` |
+| FR-011 | `test_delete_task` | `unittest` |
+| FR-012 | `test_not_found_stderr_exit1` | `unittest` — stderr + return 1 |
+| FR-013 | `test_invalid_id_treated_as_not_found` | `unittest` — id=0, negative |
+| FR-014 | `test_usage_error_exit2` | `unittest` — bad subcommand |
+| FR-015 | `test_error_to_stderr` | `unittest` |
+| FR-016 | `test_empty_title_rejected` | `unittest` |
+| FR-017 | `test_title_whitespace_trimmed` | `unittest` |
+| FR-018 | `test_duplicate_titles_allowed` | `unittest` |
+| FR-019 | `test_no_count_limit` | `unittest` — add 200 tasks |
+| FR-020 | `test_storage_schema` | `unittest` — inspect JSON on disk |
+| FR-021 | `test_missing_file_is_empty_list` | `unittest` |
+| FR-022 | `test_corrupt_storage_raises` | `unittest` |
+| FR-023 | `test_storage_io_error_raises` | `unittest` |
+| FR-024 | `test_ids_monotonic_never_reused` | `unittest` |
+| NFR-001 | `test_stdlib_only` | `unittest` — check no third-party imports |
+| NFR-002 | `test_storage_encoding` | `unittest` — check UTF-8, indent=2 |
+| NFR-003 | `test_atomic_write` | `unittest` — verify temp file gone after write |
+| NFR-004 | `test_no_write_on_noop` | `unittest` — mtime unchanged after list/no-op |
+| NFR-005 | `test_no_network_calls` | `unittest` — import check (no socket/requests) |
+| NFR-006 | Entire test file | `unittest` in temp dirs |
 
 ## Rollback notes
 
-If the implementation needs to be rolled back after commit, use `git revert <implementation-commit>` only. Do not reset, rewrite history, or manually restore files from an unrelated revision.
+All four implementation files are new creations. Rollback is:
+```
+git revert HEAD
+```
+or, if uncommitted:
+```
+git checkout -- todo/ tests/test_todo.py
+```
+No database migrations, schema changes, or external resources are involved.
